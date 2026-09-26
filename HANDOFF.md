@@ -1,5 +1,43 @@
 # Team Handoff — Amazon ML Challenge 2026 (Business Entity Resolution)
 
+## 🫵 WHERE TO START (new teammate: read this block, then nothing else until running)
+
+You are taking over a half-finished, fully-documented pipeline. Do these in order:
+
+1. **Env check (2 min):** Python 3.11+ with
+   `pip install -r code/business_entity_resolution/requirements.txt`.
+   Windows: use the real python (`C:\Python3xx\python.exe`), never the
+   `python3` store-stub, and always set `PYTHONIOENCODING=utf-8`.
+2. **Data (10 min):** download the challenge dataset zip from the portal,
+   unzip so `student_resource/student_resource/dataset/{train,test}/*.tsv` exist.
+3. **Verify (1 min):** `python work/diag_index.py` → the three keys must all
+   print `OK`.  (This proves the index fix is active — see Safety Rules below.)
+4. **Run (hours, unattended):**
+   `python code/business_entity_resolution/run_pipeline.py all`
+   Every finished stage auto-skips. On a fresh clone with data downloaded, the
+   first run rebuilds stages 1–3 (~1.5–2 h) then continues through training and
+   inference on its own. Walk away; monitor with `tail -f work/<latest>.log`.
+5. **Validate & submit:**
+   `python student_resource/student_resource/utils/validate_submission.py \
+      --matching output/matching_results.tsv \
+      --candidate output/candidate_pairs.tsv \
+      --test-dir student_resource/student_resource/dataset/test`
+   It must print `PASS`. Then upload `output/matching_results.tsv` to the portal.
+
+### If the previous machine's big files are available (Google Drive etc.)
+You can skip stages 1–3 by dropping their folders into `work/`:
+`work/cache/` (918 MB), `work/keys2/` (3.0 GB), `work/cand_train/` (~3.3 GB).
+Then `run_pipeline.py all` jumps straight to the remaining stages.
+
+### Division of labor (if more than one of you)
+* Machine A: `run_pipeline.py all` (train track → submission files)
+* Machine B (independent, parallel): `run_pipeline.py candidates test`
+  — saves ~1 h; then whoever reaches inference first uses it.
+* Keep this file updated (status table + anything you learn). That is the
+  whole handoff protocol.
+
+---
+
 **Goal:** for each Source-1 record, find every matching Source-2/Source-3 record.
 **Metric:** macro-F0.5 per S1 entity (precision-weighted 2:1, singletons included).
 **Deadline:** Sept 27, 11:59 PM IST — 5 submissions/day per team.
