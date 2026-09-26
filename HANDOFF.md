@@ -12,17 +12,26 @@
 |---|---|---|
 | 1. prep (normalize 24M records) | ✅ done | `work/cache/*.parquet` |
 | 2. keys (blocking keys, 27M vocab) | ✅ done | `work/keys2/` |
-| 3. candidates train (k=10, top_m=150) | 🔄 running now | `work/cand_train/` |
-| 4. recall eval + positive pairs | ✅ script ready | `work/cand_train/pos_*.npy` |
+| 3. candidates train (k=10, top_m=150) | 🔄 running now (~50%) | `work/cand_train/cand.*.npy` |
+| 4. recall eval + positive pairs | ⬜ run after stage 3 (STALE FILES DELETED - old ones were from the buggy index, do not reuse) | `work/cand_train/pos_*.npy` |
 | 5. blobs (text memory-maps) | ⬜ script ready | `work/blobs/` |
 | 6. features | ⬜ script ready | `work/feat_train/` |
 | 7. LightGBM + threshold | ⬜ script ready | `work/model/` |
 | 8. test candidates + inference | ⬜ script ready | `output/*.tsv` |
 | 9. validate + zip | ⬜ | submission package |
 
-**Nothing before stage 8 needs the test candidates except stage 8 itself** — stages
-4→7 (features/training/calibration) only use train data and can start the moment
-stage 3 finishes.
+### ⚠️ HANDOFF SAFETY RULES (read first!)
+
+1. **Never trust artifacts from before the index fix.** If you find
+   `work/cand_train/pos_s1.npy` or `pos_t.npy` already present, DELETE them and
+   re-run stage `recall` — they must be regenerated from the FIXED candidates.
+   (`run_pipeline.py recall` does this automatically once the old files are gone.)
+2. `run_pipeline.py` skips any stage whose output file exists — so before
+   re-running anything after this handoff, verify the outputs you have are from
+   the fixed code (candidates written after 14:30 local Sept 26 are safe).
+3. The synthetic correctness test for the index lives in `work/diag_*.py`.
+   Run `python work/diag_index.py` and confirm the three keys print OK before
+   trusting any candidate output.
 
 ---
 
