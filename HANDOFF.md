@@ -10,8 +10,10 @@ You are taking over a half-finished, fully-documented pipeline. Do these in orde
    `python3` store-stub, and always set `PYTHONIOENCODING=utf-8`.
 2. **Data (10 min):** download the challenge dataset zip from the portal,
    unzip so `student_resource/student_resource/dataset/{train,test}/*.tsv` exist.
-3. **Verify (1 min):** `python work/diag_index.py` → the three keys must all
-   print `OK`.  (This proves the index fix is active — see Safety Rules below.)
+3. **Verify (1 min):**
+   `python code/business_entity_resolution/tests/test_index.py`
+   → must end with `ALL INDEX TESTS PASSED`.  (This proves the index fix is
+   active — see Safety Rules below.)
 4. **Run (hours, unattended):**
    `python code/business_entity_resolution/run_pipeline.py all`
    Every finished stage auto-skips. On a fresh clone with data downloaded, the
@@ -67,9 +69,9 @@ Then `run_pipeline.py all` jumps straight to the remaining stages.
 2. `run_pipeline.py` skips any stage whose output file exists — so before
    re-running anything after this handoff, verify the outputs you have are from
    the fixed code (candidates written after 14:30 local Sept 26 are safe).
-3. The synthetic correctness test for the index lives in `work/diag_*.py`.
-   Run `python work/diag_index.py` and confirm the three keys print OK before
-   trusting any candidate output.
+3. The index correctness test lives in the repo:
+   `code/business_entity_resolution/tests/test_index.py` — run it (must print
+   `ALL INDEX TESTS PASSED`) before trusting any candidate output.
 
 ---
 
