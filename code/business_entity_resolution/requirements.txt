@@ -1,4 +1,4 @@
-# Core (pinned; Python 3.11-3.14)
+# Core (pinned; Python 3.12 or above )
 numpy==2.4.3
 pandas==3.0.5
 pyarrow==25.0.1
