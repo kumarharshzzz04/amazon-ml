@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+import zlib
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -54,28 +55,32 @@ def build_source(cache_parquet: str, keys_dir: str, out_dir: str,
     _write_blob(addrs, f"{out_dir}/{split}_s{s}.addr.bin",
                 f"{out_dir}/{split}_s{s}.addr.off.npy")
 
-    # country codes: open-set hash into int8 buckets by first-seen order
+    # country codes: DETERMINISTIC open-set codes (crc32 of the string).
+    # A first-seen mapping would differ per source/row-order and silently
+    # corrupt the country_eq feature, which compares codes across sources.
+    def ccode(c: str) -> int:
+        return 0 if not c else (zlib.crc32(c.encode("utf-8")) % 250) + 1
+
     cc = {}
-    ctry = np.empty(n, dtype=np.int8)
+    ctry = np.empty(n, dtype=np.int32)
     for i, c in enumerate(countries):
-        j = cc.get(c)
-        if j is None:
-            j = len(cc)
-            cc[c] = j
+        j = ccode(c)
+        cc[c] = j
         ctry[i] = j
     np.save(f"{out_dir}/{split}_s{s}.country.npy", ctry)
     with open(f"{out_dir}/{split}_s{s}.country.json", "w", encoding="utf-8") as f:
         json.dump(cc, f)
 
-    # digit signatures + postal
+    # digit signatures + postal (postal stored as the real integer code -
+    # stable across processes; python hash() is randomized per process!)
     dig = ["|".join(sorted(set(N.numeric_tokens(a)))) for a in addrs]
     _write_blob(dig, f"{out_dir}/{split}_s{s}.dig.bin",
                 f"{out_dir}/{split}_s{s}.dig.off.npy")
     postal = np.zeros(n, dtype=np.int64)
     for i, d in enumerate(dig):
         for run in d.split("|"):
-            if len(run) in (5, 6):
-                postal[i] = hash(("po", run)) & 0x7FFFFFFFFFFFFFFF
+            if len(run) in (5, 6) and run.isdigit():
+                postal[i] = int(run)
                 break
     np.save(f"{out_dir}/{split}_s{s}.postal.npy", postal)
 

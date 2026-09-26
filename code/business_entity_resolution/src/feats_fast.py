@@ -131,8 +131,8 @@ def compute_chunk(store: BlobStore, chunk):
         core1, core2 = t1 - suf1, t2 - suf2
         core_jac = N.jaccard(core1, core2) if (core1 or core2) else jac
         dset1, dset2 = set(d1.split("|")) - {""}, set(d2.split("|")) - {""}
-        p1set = {x for x in dset1 if len(x) in (5, 6)}
-        p2set = {x for x in dset2 if len(x) in (5, 6)}
+        p1set = {x for x in dset1 if len(x) in (5, 6) and x.isdigit()}
+        p2set = {x for x in dset2 if len(x) in (5, 6) and x.isdigit()}
         st1 = {x for x in t1 if x in N.STATE_TOKENS and len(x) == 2}
         st2 = {x for x in t2 if x in N.STATE_TOKENS and len(x) == 2}
         e1, e2 = (not a1.strip()), (not a2.strip())
