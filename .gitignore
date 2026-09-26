@@ -1,0 +1,15 @@
+# --- Huge generated artifacts: NEVER commit. Rebuild them with run_pipeline.py ---
+work/
+output/
+*.parquet
+*.npy
+*.bin
+__pycache__/
+*.pyc
+
+# --- Raw dataset: teammates re-download from the challenge portal ---
+student_resource/student_resource/dataset/
+
+# OS junk
+.DS_Store
+Thumbs.db
