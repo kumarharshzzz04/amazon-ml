@@ -72,8 +72,7 @@ def run(blob_dir: str, cand_dir: str, out_dir: str, split: str,
 
     if workers <= 1:
         for wi, (a, b) in enumerate(windows):
-            i1s = np.repeat(np.arange(n_s1, dtype=np.int64),
-                            np.diff(offs))[a:b]
+            i1s = np.searchsorted(offs, flat[a:b], side='right') - 1
             chunk = list(zip(i1s.tolist(), flat[a:b].tolist(),
                              score[a:b].tolist(), cnt[a:b].tolist()))
             X[a:b] = compute_chunk(BlobStore(blob_dir, split), chunk)
@@ -86,21 +85,20 @@ def run(blob_dir: str, cand_dir: str, out_dir: str, split: str,
         import multiprocessing as mp
         ctx = mp.get_context("spawn")
         jobs = []
-        offs_full = None
+        offs_full = np.load(f"{cand_dir}/cand.offs.npy", mmap_mode="r")
         for (a, b) in windows:
-            if offs_full is None:
-                offs_full = np.asarray(offs)
-            i1s = np.repeat(np.arange(n_s1, dtype=np.int64),
-                            np.diff(offs_full))[a:b]
+            i1s = np.searchsorted(offs_full, flat[a:b], side='right') - 1
             jobs.append((blob_dir, split, i1s.tolist(), flat[a:b].tolist(),
                          score[a:b].tolist(), cnt[a:b].tolist()))
-        done = 0
-        with ctx.Pool(workers, initializer=_winit, initargs=(blob_dir, split)) as pool:
-            for (a, b), res in zip(windows, pool.imap(_wchunk, jobs, chunksize=1)):
+        with ctx.Pool(workers, initializer=_winit,
+                      initargs=(blob_dir, split)) as pool:
+            res_iter = pool.imap(_wchunk, jobs)
+            done = 0
+            for (a, b), res in zip(windows, res_iter):
                 X[a:b] = res
-                i1s = jobs[done][2]
-                pair_s1[a:b] = np.asarray(i1s, dtype=np.int64)
-                pair_t[a:b] = np.asarray(flat[a:b], dtype=np.int64)
+                i1s = np.searchsorted(offs, flat[a:b], side='right') - 1
+                pair_s1[a:b] = i1s
+                pair_t[a:b] = flat[a:b]
                 done += 1
                 if done % 20 == 0:
                     print(f"    {done}/{len(windows)} windows "

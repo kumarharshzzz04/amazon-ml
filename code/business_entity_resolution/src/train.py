@@ -1,171 +1,290 @@
 """
-Stage 4 driver - train the matcher and calibrate the F0.5 threshold.
-
-Pipeline:
- 1. split train S1 rows into train/val halves (deterministic hash split)
- 2. labels: pair is positive iff (s1_row, target) is a ground-truth pair
- 3. LightGBM binary classifier on pair features
- 4. threshold sweep on validation pairs -> macro-F0.5
- 5. persist booster + threshold + metrics
-
-Usage:
-  python -m src.train <feature_dir> <cand_dir> <gt_tsv> <cache_dir> <out_dir>
+Training script for business entity resolution model.
 """
 from __future__ import annotations
 
-import csv
-import json
+import argparse
 import os
 import sys
-import time
-
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.metric import evaluate_groups  # noqa: E402
+from src import normalize as N  # noqa: E402
+from src.features import NF  # noqa: E402
+from src.build_truth import build_truth_rows
 
 
-def build_truth_rows(cache_dir: str, gt_tsv: str) -> tuple[dict, int]:
-    """GT as {s1_row: set(target_row)} using source1 row order + S2/S3 concat."""
-    import pyarrow.parquet as pq
-    tids2 = []
-    for b in pq.ParquetFile(f"{cache_dir}/train_source2.parquet").iter_batches(
-            batch_size=500_000, columns=["entity_id"]):
-        tids2.extend(b.column("entity_id").to_pylist())
-    n2 = len(tids2)
-    t2i = {e: i for i, e in enumerate(tids2)}
-    del tids2
-    for b in pq.ParquetFile(f"{cache_dir}/train_source3.parquet").iter_batches(
-            batch_size=500_000, columns=["entity_id"]):
-        for e in b.column("entity_id").to_pylist():
-            t2i[e] = len(t2i) + n2 if False else 0  # placeholder, fill below
-    # rebuild properly
-    tids3 = []
-    for b in pq.ParquetFile(f"{cache_dir}/train_source3.parquet").iter_batches(
-            batch_size=500_000, columns=["entity_id"]):
-        tids3.extend(b.column("entity_id").to_pylist())
-    for i, e in enumerate(tids3):
-        t2i[e] = n2 + i
-    s1_ids = []
-    for b in pq.ParquetFile(f"{cache_dir}/train_source1.parquet").iter_batches(
-            batch_size=500_000, columns=["entity_id"]):
-        s1_ids.extend(b.column("entity_id").to_pylist())
-    s1_row = {e: i for i, e in enumerate(s1_ids)}
-
-    truth = {}
-    with open(gt_tsv, encoding="utf-8") as f:
-        r = csv.reader(f, delimiter="\t")
-        next(r)
-        for s1, m in r:
-            i1 = s1_row.get(s1)
-            if i1 is None:
-                continue
-            rows = set()
-            for e in m.split(","):
-                i = t2i.get(e)
-                if i is not None:
-                    rows.add(i)
-            if rows:
-                truth[i1] = rows
-    return truth, n2
-
-
-def main(feature_dir: str, cand_dir: str, gt_tsv: str, cache_dir: str,
-         out_dir: str) -> None:
-    t0 = time.time()
-    os.makedirs(out_dir, exist_ok=True)
-    import lightgbm as lgb
-
+def main(feature_dir: str, truth_dir: str, ground_truth_path: str, cache_dir: str,
+         model_dir: str) -> None:
+    """Main training function."""
+    # Load precomputed features and metadata
+    print(f"Loading features from {feature_dir}...", file=sys.stderr)
+    pair_s1 = np.load(f"{feature_dir}/pair_s1.npy", mmap_mode="r")
+    pair_t = np.load(f"{feature_dir}/pair_t.npy", mmap_mode="r")
     X = np.load(f"{feature_dir}/X.npy", mmap_mode="r")
-    pair_s1 = np.load(f"{feature_dir}/pair_s1.npy")
-    pair_t = np.load(f"{feature_dir}/pair_t.npy")
     n_pairs = X.shape[0]
-    print(f"* {n_pairs:,} pairs, {X.shape[1]} features", file=sys.stderr)
+    print(f"  Loaded {n_pairs:,} pairs, {X.shape[1]} features", file=sys.stderr)
 
-    truth, n2 = build_truth_rows(cache_dir, gt_tsv)
+    # Build truth dictionary: maps S1 row indices to sets of target indices
+    print(f"Building truth dictionary from {ground_truth_path}...", file=sys.stderr)
+    truth = build_truth_rows(ground_truth_path)
+    print(f"  Loaded truth for {len(truth):,} S1 rows", file=sys.stderr)
 
-    # deterministic 50/50 S1 split
+    # First pass: find all unique S1 IDs and their frequency
+    print("  Finding unique S1 rows...", file=sys.stderr)
+    chunk_size = 1000000  # 1M pairs per chunk
+    unique_s1_set = set()
+    for start in range(0, n_pairs, chunk_size):
+        end = min(start + chunk_size, n_pairs)
+        s1_chunk = pair_s1[start:end]
+        unique_s1_set.update(np.unique(s1_chunk))
+        if start % (10 * chunk_size) == 0:
+            print(f"    processed {start:,} pairs, found {len(unique_s1_set):,} unique S1 so far",
+                  file=sys.stderr)
+
+    all_s1 = np.array(list(unique_s1_set))
+    print(f"  Total unique S1 rows: {len(all_s1):,}", file=sys.stderr)
+
+    # deterministic 10/10 split of S1 rows (20% total, 10% train, 10% val)
     rng = np.random.default_rng(42)
-    all_s1 = np.unique(pair_s1)
-    is_val_s1 = rng.random(len(all_s1)) < 0.5
-    val_s1 = set(all_s1[is_val_s1].tolist())
-    in_val = np.isin(pair_s1, np.fromiter(val_s1, dtype=np.int64))
-    y = np.zeros(n_pairs, dtype=np.int8)
-    pos_mask = np.zeros(n_pairs, dtype=bool)
-    # mark positives
-    ts = pair_t
-    ss = pair_s1
-    # vectorized: build set of (s1,t) via truth dict
-    # (python loop; 1-2 min for 500M pairs is too slow -> use dict of arrays)
-    truth_first = {}
-    for i1, rows in truth.items():
-        truth_first[i1] = np.fromiter(rows, dtype=np.int64, count=len(rows))
-    # pairs where target in truth[s1]: use per-pair lookup via searchsorted on
-    # concatenated (s1<<32 | t) keys
-    keys_truth = []
-    for i1, arr in truth_first.items():
-        keys_truth.append((arr << np.int64(32)) | np.int64(i1))
-    keys_truth = np.concatenate(keys_truth) if keys_truth else np.empty(0, np.int64)
-    keys_truth.sort()
-    keys_pairs = (ts.astype(np.int64) << np.int64(32)) | ss.astype(np.int64)
-    pos_mask = np.isin(keys_pairs, keys_truth, assume_unique=False)
-    y = pos_mask.astype(np.int8)
-    print(f"  positives: {y.sum():,} ({y.mean()*100:.2f}%) ({time.time()-t0:.0f}s)",
+    indices = np.arange(len(all_s1))
+    rng.shuffle(indices)
+    n_train_s1 = int(0.1 * len(all_s1))
+    n_val_s1 = int(0.1 * len(all_s1))
+    # Get indices for train/val split
+    train_indices = indices[:n_train_s1]
+    val_indices = indices[n_train_s1:n_train_s1+n_val_s1]
+    # Get actual S1 IDs for train/val using advanced indexing
+    train_s1_arr = all_s1[train_indices]
+    val_s1_arr = all_s1[val_indices]
+    print(f"  S1 rows: {len(all_s1):,} (train: {len(train_s1_arr):,}, val: {len(val_s1_arr):,})",
           file=sys.stderr)
 
-    tr_mask = ~in_val
-    Xtr, ytr = X[tr_mask], y[tr_mask]
-    Xva, yva = X[in_val], y[in_val]
-    s1_va = pair_s1[in_val]
-    t_va = pair_t[in_val]
-    print(f"  train pairs={len(ytr):,} val pairs={len(yva):,} "
-          f"({time.time()-t0:.0f}s)", file=sys.stderr)
+    # Create lookup arrays for fast membership testing
+    max_s1_id = np.max(all_s1)
+    train_s1_lookup = np.zeros(max_s1_id + 1, dtype=bool)
+    train_s1_lookup[train_s1_arr] = True
+    val_s1_lookup = np.zeros(max_s1_id + 1, dtype=bool)
+    val_s1_lookup[val_s1_arr] = True
 
-    pos_w = max((ytr == 0).sum() / max((ytr == 1).sum(), 1), 1.0)
+    # First pass: count training and validation pairs and build truth lookup
+    n_train = 0
+    n_val = 0
+    # Build keys_truth directly from truth to avoid intermediate structures
+    keys_list = []
+    for i1, rows in truth.items():
+        for target_id in rows:
+            keys_list.append((target_id << np.int64(32)) | np.int64(i1))
+    keys_truth = np.array(keys_list, dtype=np.int64)
+    # keys_truth.sort()  # Removed as keys_truth has no duplicates and we'll use assume_unique=True in np.isin
+
+    # We'll create index arrays for training and validation - NOT USING THESE
+    # train_indices = []
+    # val_indices = []
+
+    for start in range(0, n_pairs, chunk_size):
+        end = min(start + chunk_size, n_pairs)
+        s1_chunk = pair_s1[start:end]
+        t_chunk = pair_t[start:end]
+
+        # Check which S1s in this chunk belong to train/val using lookup arrays
+        in_train = train_s1_lookup[s1_chunk]
+        in_val = val_s1_lookup[s1_chunk]
+
+        n_train += np.sum(in_train)
+        n_val += np.sum(in_val)
+
+        # Store indices (relative to chunk start) - NOT USING THESE
+        # train_indices.extend(np.where(in_train)[0])
+        # val_indices.extend(np.where(in_val)[0])
+
+    print(f"  Training pairs: {n_train:,}, Validation pairs: {n_val:,}",
+          file=sys.stderr)
+
+    # Second pass: allocate memmaps and fill with features and labels
+    print("  Creating feature memmaps...", file=sys.stderr)
+    feature_dir = f"{cache_dir}/feat_train"
+    os.makedirs(feature_dir, exist_ok=True)
+    dtrain_X = np.lib.format.open_memmap(f"{feature_dir}/X_train.npy", mode='w+',
+                                         dtype=X.dtype, shape=(n_train,))
+    dtrain_s1 = np.lib.format.open_memmap(f"{feature_dir}/pair_s1_train.npy", mode='w+',
+                                          dtype=np.int64, shape=(n_train,))
+    dtrain_t = np.lib.format.open_memmap(f"{feature_dir}/pair_t_train.npy", mode='w+',
+                                         dtype=np.int64, shape=(n_train,))
+    dtrain_y = np.lib.format.open_memmap(f"{feature_dir}/y_train.npy", mode='w+',
+                                         dtype=np.int8, shape=(n_train,))
+
+    feature_dir = f"{cache_dir}/feat_test"
+    os.makedirs(feature_dir, exist_ok=True)
+    dval_X = np.lib.format.open_memmap(f"{feature_dir}/X_test.npy", mode='w+',
+                                       dtype=X.dtype, shape=(n_val,))
+    dval_s1 = np.lib.format.open_memmap(f"{feature_dir}/pair_s1_test.npy", mode='w+',
+                                        dtype=np.int64, shape=(n_val,))
+    dval_t = np.lib.format.open_memmap(f"{feature_dir}/pair_t_test.npy", mode='w+',
+                                       dtype=np.int64, shape=(n_val,))
+    dval_y = np.lib.format.open_memmap(f"{feature_dir}/y_test.npy", mode='w+',
+                                       dtype=np.int8, shape=(n_val,))
+
+    # Track any leftover data from previous chunk that didn't fit in allocated space
+    leftover_train_X = None
+    leftover_train_s1 = None
+    leftover_train_t = None
+    leftover_train_y = None
+    leftover_val_X = None
+    leftover_val_s1 = None
+    leftover_val_t = None
+    leftover_val_y = None
+
+    train_idx = 0
+    val_idx = 0
+    for start in range(0, n_pairs, chunk_size):
+        end = min(start + chunk_size, n_pairs)
+        X_chunk = X[start:end]
+        s1_chunk = pair_s1[start:end]
+        t_chunk = pair_t[start:end]
+
+        # Handle leftover from previous iteration
+        if leftover_train_X is not None and leftover_train_X.shape[0] > 0:
+            # Prepend leftover data to current chunk
+            X_chunk = np.concatenate([leftover_train_X, X_chunk])
+            s1_chunk = np.concatenate([leftover_train_s1, s1_chunk])
+            t_chunk = np.concatenate([leftover_train_t, t_chunk])
+            leftover_train_X = None
+            leftover_train_s1 = None
+            leftover_train_t = None
+            leftover_train_y = None
+
+        if leftover_val_X is not None and leftover_val_X.shape[0] > 0:
+            # Prepend leftover data to current chunk
+            X_chunk = np.concatenate([leftover_val_X, X_chunk])
+            s1_chunk = np.concatenate([leftover_val_s1, s1_chunk])
+            t_chunk = np.concatenate([leftover_val_t, t_chunk])
+            leftover_val_X = None
+            leftover_val_s1 = None
+            leftover_val_t = None
+            leftover_val_y = None
+
+        # Check which S1s in this chunk belong to train/val using lookup arrays
+        in_train = train_s1_lookup[s1_chunk]
+        in_val = val_s1_lookup[s1_chunk]
+
+        # Compute labels for what fits
+        train_keys_pairs = (t_chunk[:available_space].astype(np.int64) << np.int64(32)) | s1_chunk[:available_space].astype(np.int64)
+        val_keys_pairs = (t_chunk[:available_space].astype(np.int64) << np.int64(32)) | s1_chunk[:available_space].astype(np.int64)
+        train_pos_mask = np.isin(train_keys_pairs, keys_truth, assume_unique=True)
+        val_pos_mask = np.isin(val_keys_pairs, keys_truth, assume_unique=True)
+
+        # Available space in training memmaps
+        available_space = n_train - train_idx
+        if len(train_X_chunk) > available_space:
+            # Not enough space - split the data
+            # Copy what fits
+            dtrain_X[train_idx:train_idx+available_space] = train_X_chunk[:available_space]
+            dtrain_s1[train_idx:train_idx+available_space] = train_s1_chunk[:available_space]
+            dtrain_t[train_idx:train_idx+available_space] = train_t_chunk[:available_space]
+            dtrain_y[train_idx:train_idx+available_space] = train_pos_mask[:available_space]
+
+            # Save leftover for next iteration
+            leftover_train_X = train_X_chunk[available_space:]
+            leftover_train_s1 = train_s1_chunk[available_space:]
+            leftover_train_t = train_t_chunk[available_space:]
+            leftover_train_y = train_pos_mask[available_space:]
+        else:
+            # Enough space - copy all data
+            dtrain_X[train_idx:train_idx+len(train_X_chunk)] = train_X_chunk
+            dtrain_s1[train_idx:train_idx+len(train_X_chunk)] = train_s1_chunk
+            dtrain_t[train_idx:train_idx+len(train_X_chunk)] = train_t_chunk
+            dtrain_y[train_idx:train_idx+len(train_X_chunk)] = train_pos_mask
+            # No leftover
+
+        # Available space in validation memmaps
+        available_space = n_val - val_idx
+        if len(val_X_chunk) > available_space:
+            # Not enough space - split the data
+            # Copy what fits
+            dval_X[val_idx:val_idx+available_space] = val_X_chunk[:available_space]
+            dval_s1[val_idx:val_idx+available_space] = val_s1_chunk[:available_space]
+            dval_t[val_idx:val_idx+available_space] = val_t_chunk[:available_space]
+            dval_y[val_idx:val_idx+available_space] = val_pos_mask[:available_space]
+
+            # Save leftover for next iteration
+            leftover_val_X = val_X_chunk[available_space:]
+            leftover_val_s1 = val_s1_chunk[available_space:]
+            leftover_val_t = val_t_chunk[available_space:]
+            leftover_val_y = val_pos_mask[available_space:]
+        else:
+            # Enough space - copy all data
+            dval_X[val_idx:val_idx+len(val_X_chunk)] = val_X_chunk
+            dval_s1[val_idx:val_idx+len(val_X_chunk)] = val_s1_chunk
+            dval_t[val_idx:val_idx+len(val_X_chunk)] = val_t_chunk
+            dval_y[val_idx:val_idx+len(val_X_chunk)] = val_pos_mask
+            # No leftover
+
+        train_idx += available_space  # We've filled available_space more elements
+        val_idx += available_space  # We've filled available_space more elements
+
+    print(f"  Training positives: {dtrain_y.sum():,} ({dtrain_y.mean()*100:.2f}%)",
+          file=sys.stderr)
+    print(f"  Validation positives: {dval_y.sum():,} ({dval_y.mean()*100:.2f}%)",
+          file=sys.stderr)
+
+    # LightGBM training
+    print("  Training LightGBM model...", file=sys.stderr)
+    try:
+        import lightgbm as lgb
+    except ImportError:
+        print("  ERROR: LightGBM not installed. Install with: pip install lightgbm", file=sys.stderr)
+        return
+
+    # Create LightGBM datasets
+    lgb_train = lgb.Dataset(dtrain_X, label=dtrain_y)
+    lgb_val = lgb.Dataset(dval_X, label=dval_y, reference=lgb_train)
+
+    # Training parameters
     params = {
-        "objective": "binary",
-        "learning_rate": 0.06,
-        "num_leaves": 96,
-        "min_data_in_leaf": 200,
-        "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "lambda_l2": 1.0,
-        "scale_pos_weight": min(pos_w, 50.0),
-        "verbose": -1,
-        "seed": 7,
+        'objective': 'binary',
+        'metric': ['binary_logloss', 'auc'],
+        'boosting_type': 'gbdt',
+        'num_leaves': 63,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.9,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'verbose': -1,
+        'seed': 42
     }
-    dtr = lgb.Dataset(Xtr, label=ytr)
-    dva = lgb.Dataset(Xva, label=yva, reference=dtr)
-    booster = lgb.train(params, dtr, num_boost_round=600,
-                        valid_sets=[dva],
-                        callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)])
-    booster.save_model(f"{out_dir}/model.txt")
 
-    pred_va = booster.predict(Xva, num_iteration=booster.best_iteration)
-    truth_val = {s: truth[s] for s in val_s1 if s in truth}
-    n_s1_all = int(pair_s1.max()) + 1
-    best = (-1.0, None, None)
-    for thr in [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
-        f, st = evaluate_groups(s1_va, t_va, pred_va, truth_val, n_s1_all, thr)
-        print(f"  thr={thr:.2f}  F0.5={f:.4f}  {st}", file=sys.stderr)
-        if f > best[0]:
-            best = (f, thr, st)
-    # refine
-    lo, hi = max(best[1] - 0.1, 0.01), best[1] + 0.1
-    for thr in np.arange(lo, hi, 0.02):
-        f, st = evaluate_groups(s1_va, t_va, pred_va, truth_val, n_s1_all, float(thr))
-        if f > best[0]:
-            best = (f, float(thr), st)
-    print(f"  BEST thr={best[1]:.3f} F0.5={best[0]:.4f}", file=sys.stderr)
-    with open(f"{out_dir}/threshold.json", "w", encoding="utf-8") as f:
-        json.dump({"threshold": best[1], "val_f05": best[0], "stats": best[2],
-                   "best_iteration": int(booster.best_iteration or 0),
-                   "n_train_pairs": int(len(ytr)), "n_val_pairs": int(len(yva))},
-                  f, indent=2)
-    print(f"* done ({time.time()-t0:.0f}s)", file=sys.stderr)
+    # Train model
+    gbm = lgb.train(params,
+                    lgb_train,
+                    num_boost_round=1000,
+                    valid_sets=[lgb_train, lgb_val],
+                    callbacks=[
+                        lgb.early_stopping(stopping_rounds=50),
+                        lgb.log_evaluation(period=50)
+                    ])
+
+    # Save model
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = f"{model_dir}/model.txt"
+    gbm.save_model(model_path)
+    print(f"  Model saved to {model_path}", file=sys.stderr)
+
+    # Feature importance
+    print("  Top 20 features by importance:", file=sys.stderr)
+    for i, (imp, name) in enumerate(zip(gbm.feature_importance(importance_type='gain'),
+                                        [f"f_{i}" for i in range(X.shape[1])])):
+        if i >= 20:
+            break
+        print(f"    {i+1:2d}. {name}: {imp}", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    a = sys.argv
-    main(a[1], a[2], a[3], a[4], a[5])
+    parser = argparse.ArgumentParser(description='Train business entity resolution model')
+    parser.add_argument('feature_dir', help='Directory containing feature files')
+    parser.add_argument('truth_dir', help='Directory containing truth files')
+    parser.add_argument('ground_truth_path', help='Path to ground truth TSV file')
+    parser.add_argument('cache_dir', help='Directory for intermediate cache files')
+    parser.add_argument('model_dir', help='Directory to save trained model')
+    args = parser.parse_args()
+    main(args.feature_dir, args.truth_dir, args.ground_truth_path, args.cache_dir, args.model_dir)

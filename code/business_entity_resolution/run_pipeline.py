@@ -37,7 +37,7 @@ def sh(args: list[str]) -> None:
 
 def stage_prep():
     sh([PY, "-m", "src.prep",
-        "student_resource/student_resource/dataset", "work/cache"])
+        "dataset", "work/cache"])
 
 
 def stage_keys():
@@ -59,7 +59,7 @@ def stage_recall():
         return
     sh([PY, "-m", "src.eval_recall", "work/cache", "work/cand_train",
         "work/cand_train",
-        "student_resource/student_resource/dataset/train/train_ground_truth.tsv",
+        "dataset/train/train_ground_truth.tsv",
         "train"])
 
 
@@ -81,7 +81,7 @@ def stage_train():
         print("[skip] model exists")
         return
     sh([PY, "-m", "src.train", "work/feat_train", "work/cand_train",
-        "student_resource/student_resource/dataset/train/train_ground_truth.tsv",
+        "dataset/train/train_ground_truth.tsv",
         "work/cache", "work/model"])
 
 

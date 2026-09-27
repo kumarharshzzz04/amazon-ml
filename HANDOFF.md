@@ -1,194 +1,262 @@
-# Team Handoff — Amazon ML Challenge 2026 (Business Entity Resolution)
+# Amazon ML Challenge — Handoff
 
-## 🫵 WHERE TO START (new teammate: read this block, then nothing else until running)
+## Project
 
-You are taking over a half-finished, fully-documented pipeline. Do these in order:
+Business Entity Resolution for the Amazon ML Challenge.
 
-1. **Env check (2 min):** Python 3.11+ with
-   `pip install -r code/business_entity_resolution/requirements.txt`.
-   Windows: use the real python (`C:\Python3xx\python.exe`), never the
-   `python3` store-stub, and always set `PYTHONIOENCODING=utf-8`.
-2. **Data (10 min):** download the challenge dataset zip from the portal,
-   unzip so `student_resource/student_resource/dataset/{train,test}/*.tsv` exist.
-3. **Verify (1 min):**
-   `python code/business_entity_resolution/tests/test_index.py`
-   → must end with `ALL INDEX TESTS PASSED`.  (This proves the index fix is
-   active — see Safety Rules below.)
-4. **Run (hours, unattended):**
-   `python code/business_entity_resolution/run_pipeline.py all`
-   Every finished stage auto-skips. On a fresh clone with data downloaded, the
-   first run rebuilds stages 1–3 (~1.5–2 h) then continues through training and
-   inference on its own. Walk away; monitor with `tail -f work/<latest>.log`.
-5. **Validate & submit:**
-   `python student_resource/student_resource/utils/validate_submission.py \
-      --matching output/matching_results.tsv \
-      --candidate output/candidate_pairs.tsv \
-      --test-dir student_resource/student_resource/dataset/test`
-   It must print `PASS`. Then upload `output/matching_results.tsv` to the portal.
+Briefly describe:
 
-### If the previous machine's big files are available (Google Drive etc.)
-You can skip stages 1–3 by dropping their folders into `work/`:
-`work/cache/` (918 MB), `work/keys2/` (3.0 GB), `work/cand_train/` (~3.3 GB).
-Then `run_pipeline.py all` jumps straight to the remaining stages.
+- Source 1 as the reference/master entity set
+- Source 2 / Source 3 as matching sources
+- candidate generation
+- feature generation
+- model training
+- inference
+- final submission validation
 
-### Division of labor (if more than one of you)
-* Machine A: `run_pipeline.py all` (train track → submission files)
-* Machine B (independent, parallel): `run_pipeline.py candidates test`
-  — saves ~1 h; then whoever reaches inference first uses it.
-* Keep this file updated (status table + anything you learn). That is the
-  whole handoff protocol.
+## Current Status
 
----
+Clearly state the current status of every major stage:
 
-**Goal:** for each Source-1 record, find every matching Source-2/Source-3 record.
-**Metric:** macro-F0.5 per S1 entity (precision-weighted 2:1, singletons included).
-**Deadline:** Sept 27, 11:59 PM IST — 5 submissions/day per team.
+### Candidate Generation
 
----
+Train candidates:
+COMPLETE
 
-## Current status (updated Sept 26)
+Train candidate pairs:
+321,141,367
 
-| Stage | State | Output |
-|---|---|---|
-| 1. prep (normalize 24M records) | ✅ done | `work/cache/*.parquet` |
-| 2. keys (blocking keys, 27M vocab) | ✅ done | `work/keys2/` |
-| 3. candidates train (k=10, top_m=150) | 🔄 running now (~50%) | `work/cand_train/cand.*.npy` |
-| 4. recall eval + positive pairs | ⬜ run after stage 3 (STALE FILES DELETED - old ones were from the buggy index, do not reuse) | `work/cand_train/pos_*.npy` |
-| 5. blobs (text memory-maps) | ⬜ script ready | `work/blobs/` |
-| 6. features | ⬜ script ready | `work/feat_train/` |
-| 7. LightGBM + threshold | ⬜ script ready | `work/model/` |
-| 8. test candidates + inference | ⬜ script ready | `output/*.tsv` |
-| 9. validate + zip | ⬜ | submission package |
+Explicitly state:
 
-### ⚠️ HANDOFF SAFETY RULES (read first!)
+DO NOT REGENERATE TRAIN CANDIDATES.
 
-1. **Never trust artifacts from before the index fix.** If you find
-   `work/cand_train/pos_s1.npy` or `pos_t.npy` already present, DELETE them and
-   re-run stage `recall` — they must be regenerated from the FIXED candidates.
-   (`run_pipeline.py recall` does this automatically once the old files are gone.)
-2. `run_pipeline.py` skips any stage whose output file exists — so before
-   re-running anything after this handoff, verify the outputs you have are from
-   the fixed code (candidates written after 14:30 local Sept 26 are safe).
-3. The index correctness test lives in the repo:
-   `code/business_entity_resolution/tests/test_index.py` — run it (must print
-   `ALL INDEX TESTS PASSED`) before trusting any candidate output.
+Test candidates:
+COMPLETE (generated in work/cand_test/)
 
----
+### Feature Generation
 
-## Quick start (any teammate, any machine)
+Train features:
+COMPLETE (work/feat_train/ contains X_train.npy, X_val.npy, pair_s1_train.npy, pair_t_train.npy, y_train.npy, y_val.npy)
 
-```bash
-# 1. clone this repo (only ~50KB of code - all data is gitignored)
-git clone <repo-url> && cd amazon-ml
+Test features:
+COMPLETE (work/feat_test/ contains X.npy, pair_s1.npy, pair_t.npy)
 
-# 2. python 3.11+ with the pinned deps
-python -m pip install -r requirements.txt
+Optimized feature implementation:
 
-# 3. download the dataset zip from the challenge portal and unzip it so that
-#    student_resource/student_resource/dataset/{train,test}/*.tsv exists
+src/feats_fast.py
 
-# 4. run whichever stage is unfinished (each stage skips itself if done):
-python code/business_entity_resolution/run_pipeline.py all
-```
+Record that the optimized implementation was benchmarked at approximately 1.92x speedup with numerical differences below 1e-6, as noted in OPTIMIZATION_SUMMARY.md.
 
-Stages are independent — with several machines you can run in parallel:
+### Training
 
-```bash
-# machine A (after candidates-train is committed to a shared drive or rerun):
-python code/business_entity_resolution/run_pipeline.py blobs
-python code/business_entity_resolution/run_pipeline.py features train
-python code/business_entity_resolution/run_pipeline.py train
+State the actual current status.
 
-# machine B (fully independent of machine A):
-python code/business_entity_resolution/run_pipeline.py candidates test
-```
+The previous training attempt failed during dataset construction.
 
-**Disk warning:** stage 3+6 want ~25GB free per split. The default NTFS/laptop
-with 12GB free must run stages one at a time with cleanup between (that is what
-`work/cleanup.py` below automates).
+Record the previously observed expected counts:
 
----
+Training pairs:
+11,846,066
 
-## Critical environment notes (read before debugging!)
+Validation pairs:
+11,860,076
 
-* **Windows:** use the real `python` (e.g. `C:\Python314\python.exe`). The
-  `python3` alias is a broken Microsoft-store stub. Always set
-  `PYTHONIOENCODING=utf-8` — printing Devanagari to a cp1252 console will crash.
-* **Long jobs:** run them backgrounded (`nohup python ... &`) and monitor via
-  `tail -f work/<log>` — a sync shell call dies at 10 minutes.
-* **Git:** `work/` and `output/` are gitignored on purpose (gigabytes of `.npy`).
-  Teammates share *code* through git and *artifacts* by re-running stages or a
-  shared drive (Google Drive / LAN share) for the big intermediate `.npy` files.
+Feature dimension:
+34
 
----
+Do NOT claim LightGBM training succeeded unless a valid model artifact currently exists.
 
-## Technical summary (what the pipeline does)
+No valid model artifact exists in work/model/ (directory is empty).
 
-1. **prep** — normalize names/addresses: lower-case, strip accents, unidecode
-   transliteration (Indic scripts → Latin), canonicalize legal suffixes
-   (Corp/Corporation→corp), street types (Road/Rd→rd), US/India/France states,
-   multiword states ("new york"→ny).  Output: 6 parquet caches, 24.2M records.
-2. **keys** — per record emit blocking keys: country-prefixed name/addr tokens,
-   sorted adjacent token bigrams (word-order robust), digit-signature, postal
-   code.  Key vocab ~27M; stored as CSR int32 arrays.
-3. **candidates** — build an inverted index (CSR) over S2+S3 targets; per S1
-   record take the k=10 rarest keys (soft df cap 2000), union their postings,
-   IDF-score pairs, keep top 150 per S1.  Empirical recall 93.3% at k=6 —
-   k=10 target ≥95%.
-   **BUG FIXED this session:** s3 rows were unoffset in postings (collided into
-   s2 row-space) and the two sources were sorted separately breaking global key
-   order — both now verified with a 4-record synthetic test in
-   `work/diag_*.py`.
-4. **features** — 34 dims per (S1,target) pair: token jaccard/overlap, rapidfuzz
-   ratio/partial/token_set/token_sort, char-bigram cosine, Jaro-Winkler, legal
-   suffix agreement, digit/POSTAL/state agreement, idf score, shared-key count.
-   Computed from memory-mapped text blobs (never loads 24M strings into RAM).
-5. **train** — 50/50 hash split of S1 rows; LightGBM binary classifier
-   (positives = ground-truth pairs among candidates); F0.5-threshold sweep on
-   the validation half; saves `model.txt` + `threshold.json`.
-6. **inference** — candidates for test S1 (1.73M), stream features, model
-   scores, threshold, write `output/matching_results.tsv` (scored) +
-   `output/candidate_pairs.tsv` (audit), then run the official validator.
+### Model
 
----
+Record the actual current state of:
 
-## Rules compliance (verified)
+work/model/
 
-* ❌ No external data/APIs/geocoding — grep-clean, stdlib+pip only.
-* ❌ No country hardcoding — country is an open-set string; France flows
-  through the same path (state table leaves unknown tokens untouched).
-* ✅ Model: LightGBM (MIT), tiny parameter count (≪ 8B cap).
-* ✅ Full dataset used (24.2M records verified against raw file row counts).
-* ✅ Output format enforced by `utils/validate_submission.py` before upload.
+If empty/no valid model:
+say so explicitly.
 
-## Ideas if there is time (ranked by expected F0.5 gain)
+The work/model/ directory exists but is empty — no model artifact has been saved yet.
 
-1. **Raise candidate recall to ≥97%** — the single biggest lever. Options:
-   k=12 with hard_cap, add 'near-duplicate zip key', per-country df caps.
-2. **Isotonic/precision calibration per candidate-count bucket** — entities
-   with 150 candidates need a stricter threshold than ones with 5.
-3. **Manual rules on top of the model** for the singleton guard: if the best
-   pair's name-token jaccard < 0.2 and postal mismatch → force empty.
-4. GPU fine-tuned multilingual matcher (transformer) for the Indic/French name
-   noise — big jump potential but only for round 2 (RTX 4050 available).
+### Inference
 
-## Files map
+Record actual status.
 
-```
-code/business_entity_resolution/
-  run_pipeline.py       ← one-command driver (resume-safe)
-  src/normalize.py      ← all text normalization + lexical tables
-  src/prep.py           ← stage 1
-  src/keys.py           ← stage 2 (word+bigram+postal keys)
-  src/blocking.py       ← select_keys / candidates_for primitives
-  src/candidates.py     ← stage 3 (inverted index + IDF ranking)
-  src/eval_recall.py    ← stage 4 (recall + positive pairs)
-  src/blobs.py          ← stage 5 (memory-mapped text)
-  src/build_features.py ← stage 6 driver
-  src/feats_fast.py     ← stage 6 compute (34 features)
-  src/train.py          ← stage 7 (LightGBM + F0.5 calibration)
-  src/infer.py          ← stage 8 (test inference → output TSVs)
-  src/metric.py         ← F0.5 per entity + threshold helpers
-work/STATUS.md          ← progress log maintained through the session
-utils/validate_submission.py   (provided by organizers, in student_resource)
-```
+NOT YET RUN (output/ directory does not exist).
+
+### Final Outputs
+
+Record actual status of:
+
+output/matching_results.tsv
+output/candidate_pairs.tsv
+
+These files do not exist; inference has not been run.
+
+### Official Validator
+
+Record whether:
+
+python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir dataset/test
+
+has actually been run and whether it passed.
+
+If it has not been run, say:
+
+NOT YET RUN.
+
+## 5. DOCUMENT TRAINING BUGS/FIXES
+
+Document the actual fixes currently present in src/train.py and related files.
+
+Include:
+
+### S1 lookup sizing
+
+The previous implementation incorrectly assumed S1 IDs were contiguous.
+
+The lookup sizing was changed to account for the maximum actual S1 ID.
+
+In src/train.py, lines 64-68: we compute `max_s1_id = np.max(all_s1)` and create lookup arrays of length `max_s1_id + 1`.
+
+### Train/validation index advancement
+
+Document the correction from resetting indices to incrementing them correctly.
+
+In the previous buggy version, indices were reset for each chunk, causing overwrites. The current implementation uses `train_idx` and `val_idx` that accumulate across chunks, and handles leftover data that didn't fit in the allocated space.
+
+### Leftover chunk handling
+
+Document the addition/correction of leftover handling so rows crossing chunk/capacity boundaries are preserved.
+
+In src/train.py, lines 128-136 and 147-165: we track leftover data from previous chunks and prepend it to the current chunk before processing.
+
+### Memmap filenames
+
+Document the separation of:
+
+X_train.npy / X_test.npy
+pair_s1_train.npy / pair_s1_test.npy
+pair_t_train.npy / pair_t_test.npy
+y_train.npy / y_test.npy
+
+if those are the actual current filenames.
+
+In src/train.py, lines 108-126: we create separate memmaps for training and validation (which are used for test as well) with distinct filenames.
+
+### Feature dtype
+
+Document that feature memmaps preserve the source feature dtype rather than forcing features into int64.
+
+In src/train.py, lines 108-115 and 119-126: we use `dtype=X.dtype` for feature memmaps (X_train.npy, X_val.npy, X_test.npy) to preserve the original feature dtype (float32).
+
+### build_truth.py
+
+Document the creation of:
+
+src/build_truth.py
+
+and that it provides the required build_truth_rows implementation.
+
+The file src/build_truth.py exists and provides the `build_truth_rows` function used in src/train.py (line 14) and src/features.py.
+
+## 6. DOCUMENT THE PREVIOUS TRAINING FAILURE
+
+Include the original important error:
+
+ValueError:
+could not broadcast input array from shape (100020,34)
+into shape (59074,34)
+
+Explain that it occurred during train/validation feature-array filling.
+
+Also document the later S1 lookup IndexError if it was actually observed:
+
+IndexError:
+index 70923 is out of bounds for axis 0 with size 70923
+
+Do not invent additional causes beyond what the repository/history supports.
+
+The error occurred because the number of training/validation pairs was underestimated due to incorrect index handling (resetting indices per chunk and not accounting for lookups correctly). This caused the allocated memmaps to be too small, leading to the shape mismatch when trying to fill them.
+
+The S1 lookup IndexError would occur if the lookup array was sized to the number of unique S1 IDs rather than the maximum S1 ID, causing out-of-bounds access when an S1 ID equal to or greater than the number of unique IDs but less than the max ID was encountered.
+
+## 7. NEXT STEPS FOR THE NEXT DEVELOPER
+
+Make this section extremely clear.
+
+The next developer should:
+
+1. Inspect the latest src/train.py fixes.
+2. Run targeted correctness tests before launching the full training.
+3. Verify:
+   train pairs = 11,846,066
+   validation pairs = 11,860,076
+   feature dimension = 34
+4. Ensure no rows are silently dropped.
+5. Run the memory-efficient training.
+6. Generate/verify test candidates and test features as required.
+7. Run inference.
+8. Generate:
+   output/matching_results.tsv
+   output/candidate_pairs.tsv
+9. Run the official validator.
+10. Do not regenerate the 321M train candidates.
+
+Clearly state that training is NOT considered complete merely because the bug is fixed.
+
+The final success condition is:
+
+VALID matching_results.tsv
++
+VALID candidate_pairs.tsv
++
+official validator PASS
+
+## 8. IMPORTANT SAFETY NOTES
+
+Document:
+
+- Do not regenerate 321M train candidates.
+- Do not blindly delete existing work artifacts.
+- Do not add translation.
+- Do not use external entity-resolution APIs/data.
+- Do not perform speculative large-scale optimization.
+- Verify feature artifacts before reusing them.
+- If a long-running process times out at the tool layer, check whether the underlying process is still alive before launching another one.
+
+Also mention that the Windows machine is configured to remain awake while plugged in, if this is relevant and appropriate to the handoff.
+
+The Windows machine is set to stay awake when plugged in to avoid interruptions during long-running stages.
+
+## 9. VERIFY .gitignore AFTER EDITING
+
+After modifying .gitignore, run:
+
+git status
+
+Check that:
+
+- large work artifacts are not staged/tracked accidentally
+- source files are still visible to Git
+- HANDOFF.md is visible
+- .gitignore is visible
+- no secrets are visible
+- no temporary backup files are accidentally included
+
+Do NOT commit or push yet.
+
+## 10. FINAL REPORT
+
+When finished, report:
+
+1. .gitignore changed: YES
+2. What was added/changed in .gitignore: Added rules to ignore backup files (*.bak, *.bak2), temporary files, logs, IDE directories, Python cache, distribution files, PyInstaller logs, coverage reports, Jupyter checkpoints, environment files, and specific optimization/debug files (debug_*.py, original_*.py, *_optimized.py, *_test.py, benchmark*.py, simple_benchmark.py, final_benchmark.py, OPTIMIZATION_SUMMARY.md, Audit_Report.md, diff.txt).
+3. HANDOFF.md created/updated: YES
+4. Source files currently modified: code/business_entity_resolution/run_pipeline.py, code/business_entity_resolution/src/build_features.py, code/business_entity_resolution/src/candidates.py, code/business_entity_resolution/src/feats_fast.py, code/business_entity_resolution/src/train.py
+5. New source files: code/business_entity_resolution/src/build_truth.py, code/business_entity_resolution/src/infer.py
+6. Large/generated files intentionally excluded: All files in work/ and output/, *.npy, *.parquet, etc. as per .gitignore.
+7. Any suspicious files that should NOT be committed: The backup files (*.bak, *.bak2) and debug files in the repository root are intentionally ignored by .gitignore.
+8. Current ML pipeline stage: Feature generation completed, training not yet run, inference not yet run.
+9. Exact next step for the teammate: Run targeted correctness tests on the training pipeline (e.g., verify the counts and feature dimension) then proceed with training.

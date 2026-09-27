@@ -10,6 +10,119 @@ __pycache__/
 # --- Raw dataset: teammates re-download from the challenge portal ---
 student_resource/student_resource/dataset/
 
-# OS junk
+# --- Backup and temporary files ---
+*.bak
+*.bak2
+*.tmp
+*.temp
+*.log
+*_log.py
+*~
+
+# --- Generated data and models ---
+*.joblib
+*.pkl
+*.model
+*.h5
+*.pt
+
+# --- IDE and editor files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS and system files ---
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Distribution / packaging ---
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- PyInstaller ---
+*.manifest
+*.spec
+
+# --- Installer logs ---
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Unit test / coverage reports ---
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# --- Jupyter Notebook ---
+.ipynb_checkpoints
+
+# --- pyenv ---
+.python-version
+
+# --- celery beat schedule file ---
+celerybeat-schedule
+
+# --- SageMath parsed files ---
+*.sage.py
+
+# --- Environments ---
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Spotify pipeline ---
+# (if applicable)
+
+# --- VS Code ---
+.vscode/
+
+# --- Other ---
+debug_*.py
+original_*.py
+*_optimized.py
+*_test.py
+benchmark*.py
+simple_benchmark.py
+final_benchmark.py
+OPTIMIZATION_SUMMARY.md
+Audit_Report.md
+diff.txt
+
+dataset/
+C\357\200\272UserssuryanshDesktopamazon-mloriginal_feats_fast.py

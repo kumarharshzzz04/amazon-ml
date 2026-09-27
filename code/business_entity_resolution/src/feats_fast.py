@@ -12,12 +12,20 @@ import sys
 from collections import Counter
 
 import numpy as np
+from functools import lru_cache
 from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src import normalize as N  # noqa: E402
 from src.features import NF  # noqa: E402
+
+
+# Global caches for each worker (initialized in _winit)
+_S = None
+_decoded_cache = {}      # (s, i) -> (name, addr, dig)
+_token_cache = {}        # (kind, text) -> frozenset of tokens
+_bigram_cache = {}       # text -> (Counter, norm) where norm = sqrt(sum of counts)
 
 
 class BlobStore:
@@ -72,32 +80,49 @@ class _MM:
 
 
 def _tokens_cached_factory():
-    cache = {}
-
+    """Returns a function that caches token frozensets per worker."""
     def get(kind, text):
         key = (kind, text)
-        v = cache.get(key)
+        v = _token_cache.get(key)
         if v is None:
             if kind == "n":
                 v = frozenset(N.name_tokens(text))
             else:
                 v = frozenset(N.addr_tokens(text))
-            if len(cache) > 300_000:
-                cache.clear()
-            cache[key] = v
+            if len(_token_cache) > 300_000:
+                _token_cache.clear()
+            _token_cache[key] = v
         return v
-
     return get
+
+
+def _get_bigram(text: str):
+    """Return (Counter, norm) for bigrams of text, cached per worker."""
+    if text in _bigram_cache:
+        return _bigram_cache[text]
+    if not text:
+        ga = Counter()
+        na = 0
+    else:
+        ga = Counter(text[i:i+2] for i in range(len(text)-1))
+        na = sum(ga.values())
+    norm = na ** 0.5  # sqrt of total bigram count
+    result = (ga, norm)
+    if len(_bigram_cache) >= 50_000:
+        _bigram_cache.clear()
+    _bigram_cache[text] = result
+    return result
 
 
 def _charbigram_cos(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
-    ga = Counter(a[i:i+2] for i in range(len(a) - 1))
-    gb = Counter(b[i:i+2] for i in range(len(b) - 1))
+    ga, na_norm = _get_bigram(a)
+    gb, nb_norm = _get_bigram(b)
+    if na_norm == 0 or nb_norm == 0:
+        return 0.0
     dot = sum((ga & gb).values())
-    na, nb = sum(ga.values()), sum(gb.values())
-    return dot / (na ** 0.5 * nb ** 0.5) if na and nb else 0.0
+    return dot / (na_norm * nb_norm)
 
 
 def _legal_set(toks):
@@ -110,17 +135,33 @@ def compute_chunk(store: BlobStore, chunk):
     out = np.empty((len(chunk), NF), dtype=np.float32)
     n2 = store.n2
     for r, (i1, t, ksc, kcn) in enumerate(chunk):
-        n1, a1, d1, c1, p1 = store.rec(1, i1)
+        # Use cached decoded records
+        key1 = (1, i1)
+        if key1 in _decoded_cache:
+            n1, a1, d1, c1, p1 = _decoded_cache[key1]
+        else:
+            n1, a1, d1, c1, p1 = store.rec(1, i1)
+            _decoded_cache[key1] = (n1, a1, d1, c1, p1)
+            if len(_decoded_cache) > 100_000:
+                _decoded_cache.clear()
+
         if t < n2:
             s = 2
             i2 = t
         else:
             s = 3
             i2 = t - n2
-        n2t, a2, d2, c2, p2 = store.rec(s, i2)
+        key2 = (s, i2)
+        if key2 in _decoded_cache:
+            n2t, a2, d2, c2, p2 = _decoded_cache[key2]
+        else:
+            n2t, a2, d2, c2, p2 = store.rec(s, i2)
+            _decoded_cache[key2] = (n2t, a2, d2, c2, p2)
+            if len(_decoded_cache) > 100_000:
+                _decoded_cache.clear()
 
         t1 = tok("n", n1)
-        t2 = tok("n", n2)
+        t2 = tok("n", n2t)
         at1 = tok("a", a1)
         at2 = tok("a", a2)
 
@@ -143,16 +184,20 @@ def compute_chunk(store: BlobStore, chunk):
         def addr_ratio(fn):
             return 1.0 if both_empty else (0.0 if any_empty else fn)
 
+        # Debug print for first record
+        if r == 0:
+            print(f"DEBUG: n1={repr(n1)} ({type(n1)}), n2t={repr(n2t)} ({type(n2t)}), a1={repr(a1)} ({type(a1)}), a2={repr(a2)} ({type(a2)})")
+
         out[r] = [
             # name (13)
             jac, ov,
-            fuzz.ratio(n1, n2) / 100.0,
-            fuzz.partial_ratio(n1, n2) / 100.0,
-            fuzz.token_set_ratio(n1, n2) / 100.0,
-            fuzz.token_sort_ratio(n1, n2) / 100.0,
-            _charbigram_cos(n1, n2),
-            JaroWinkler.similarity(n1, n2),
-            min(len(n1), len(n2)) / max(len(n1), len(n2), 1),
+            fuzz.ratio(n1, n2t) / 100.0,
+            fuzz.partial_ratio(n1, n2t) / 100.0,
+            fuzz.token_set_ratio(n1, n2t) / 100.0,
+            fuzz.token_sort_ratio(n1, n2t) / 100.0,
+            _charbigram_cos(n1, n2t),
+            JaroWinkler.similarity(n1, n2t),
+            min(len(n1), len(n2t)) / max(len(n1), len(n2t), 1),
             (N.jaccard(suf1, suf2) if (suf1 or suf2) else 1.0),
             1.0 if (suf1 and suf2) else 0.0,
             1.0 if (not t1 and not t2) else 0.0,
@@ -183,3 +228,21 @@ def compute_chunk(store: BlobStore, chunk):
             float(p1 != 0 and p2 != 0 and p1 == p2),
         ]
     return out
+
+
+def _winit(blob_dir: str, split: str) -> None:
+    global _S, _decoded_cache, _token_cache, _bigram_cache
+    _S = BlobStore(blob_dir, split)
+    _decoded_cache.clear()
+    _token_cache.clear()
+    _bigram_cache.clear()
+
+
+def _wchunk(args):
+    blob_dir, split, i1s, ts, ksc, kcn = args
+    store = _S if "_S" in globals() else BlobStore(blob_dir, split)
+    return compute_chunk(store, list(zip(i1s, ts, ksc, kcn)))
+
+
+# Keep the original function signatures for backward compatibility with build_features.py
+# The actual implementation uses the global caches via _winit and _wchunk.
