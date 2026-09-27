@@ -1,5 +1,46 @@
 # Team Handoff — Amazon ML Challenge 2026 (Business Entity Resolution)
 
+## ⚡ RESUME HERE (state as of Sep 27, ~14:00 IST — branch `agent/pipeline-fixes`)
+
+Everything below is ALREADY DONE on this machine (all under gitignored `work/`,
+so a `git pull` cannot touch it):
+
+- Train candidates built (k=10, 321M pairs) — `work/cand_train/`
+- **Candidate recall = 94.40%** (7.21M / 7.64M true pairs) — `work/cand_train/recall.json`
+- Test candidates built — `work/cand_test/` (251.7M pairs, 145.3/S1)
+- Blobs built — `work/blobs/`; train features (13.96M pairs, neg-subsampled) — `work/feat_train/`
+- **LightGBM model trained** (600 rounds, val logloss 0.0136) — `work/model/model.txt`
+
+### Remaining steps (in order, all commands from repo root)
+
+```bash
+export PYTHONIOENCODING=utf-8 PYTHONPATH=code/business_entity_resolution
+PY=/c/Python314/python
+
+# 1. Threshold calibration on full candidate pools (~20 min; writes work/model/threshold.json)
+$PY -m src.build_features_range work/blobs work/cand_train work/calib train 100000 && \
+$PY -m src.calibrate work/calib work/cand_train work/model \
+  student_resource/student_resource/dataset/train/train_ground_truth.tsv \
+  work/cache work/model > work/calib.log 2>&1
+
+# 2. OPTIONAL (recommended, ~4 min): truncate test candidates to top-100 by IDF
+#    score per row. Keeps 99.39% of true positives, cuts scoring from ~6.5h to ~4.5h.
+$PY -m src.truncate_cand work/cand_test work/cand_test_top100 100
+
+# 3. Test inference (~4.5h with top100, ~6.5h full) — writes output/*.tsv atomically
+$PY -m src.infer work/blobs work/cand_test_top100 work/model output
+
+# 4. Validate (must print PASS) + zip
+$PY student_resource/student_resource/utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir student_resource/student_resource/dataset/test
+$PY work/make_zip.py <team_name>
+```
+
+Total remaining ≈ 5h with truncation (finish ~19:00) or ~7h without (thin buffer).
+Note: `src/infer.py` hardcodes the model dir only via args — pass the same model
+dir for scoring; the threshold comes from `work/model/threshold.json`.
+
+---
+
 ## 🫵 WHERE TO START (new teammate: read this block, then nothing else until running)
 
 You are taking over a half-finished, fully-documented pipeline. Do these in order:
