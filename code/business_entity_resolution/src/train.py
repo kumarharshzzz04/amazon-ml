@@ -27,7 +27,7 @@ def main(feature_dir: str, truth_dir: str, ground_truth_path: str, cache_dir: st
 
     # Build truth dictionary: maps S1 row indices to sets of target indices
     print(f"Building truth dictionary from {ground_truth_path}...", file=sys.stderr)
-    truth = build_truth_rows(ground_truth_path)
+    truth, _ = build_truth_rows(truth_dir, ground_truth_path)
     print(f"  Loaded truth for {len(truth):,} S1 rows", file=sys.stderr)
 
     # First pass: find all unique S1 IDs and their frequency
@@ -103,27 +103,118 @@ def main(feature_dir: str, truth_dir: str, ground_truth_path: str, cache_dir: st
 
     # Second pass: allocate memmaps and fill with features and labels
     print("  Creating feature memmaps...", file=sys.stderr)
-    feature_dir = f"{cache_dir}/feat_train"
-    os.makedirs(feature_dir, exist_ok=True)
-    dtrain_X = np.lib.format.open_memmap(f"{feature_dir}/X_train.npy", mode='w+',
-                                         dtype=X.dtype, shape=(n_train,))
-    dtrain_s1 = np.lib.format.open_memmap(f"{feature_dir}/pair_s1_train.npy", mode='w+',
-                                          dtype=np.int64, shape=(n_train,))
-    dtrain_t = np.lib.format.open_memmap(f"{feature_dir}/pair_t_train.npy", mode='w+',
-                                         dtype=np.int64, shape=(n_train,))
-    dtrain_y = np.lib.format.open_memmap(f"{feature_dir}/y_train.npy", mode='w+',
-                                         dtype=np.int8, shape=(n_train,))
 
-    feature_dir = f"{cache_dir}/feat_test"
-    os.makedirs(feature_dir, exist_ok=True)
-    dval_X = np.lib.format.open_memmap(f"{feature_dir}/X_test.npy", mode='w+',
-                                       dtype=X.dtype, shape=(n_val,))
-    dval_s1 = np.lib.format.open_memmap(f"{feature_dir}/pair_s1_test.npy", mode='w+',
-                                        dtype=np.int64, shape=(n_val,))
-    dval_t = np.lib.format.open_memmap(f"{feature_dir}/pair_t_test.npy", mode='w+',
-                                       dtype=np.int64, shape=(n_val,))
-    dval_y = np.lib.format.open_memmap(f"{feature_dir}/y_test.npy", mode='w+',
-                                       dtype=np.int8, shape=(n_val,))
+    # Define paths for training and validation feature directories
+    train_feat_dir = f"{cache_dir}/feat_train"
+    val_feat_dir = f"{cache_dir}/feat_test"
+    os.makedirs(train_feat_dir, exist_ok=True)
+    os.makedirs(val_feat_dir, exist_ok=True)
+
+    # Function to check if memmap exists and has correct shape
+    def check_and_load_memmap(filepath, dtype, shape, read_only=False):
+        if os.path.exists(filepath):
+            try:
+                # Try to open in read-only mode to check shape
+                existing = np.lib.format.open_memmap(filepath, mode='r', dtype=dtype, shape=shape)
+                if existing.shape == shape:
+                    if read_only:
+                        return existing
+                    else:
+                        # If we need to write, we can still use it if we open in read-write mode
+                        # But note: if the file exists and is correct, we can use it in read-write mode
+                        return np.lib.format.open_memmap(filepath, mode='r+', dtype=dtype, shape=shape)
+                else:
+                    print(f"    Shape mismatch for {filepath}. Expected {shape}, got {existing.shape}. Recreating.", file=sys.stderr)
+            except Exception as e:
+                print(f"    Error reading {filepath}: {e}. Recreating.", file=sys.stderr)
+        # If we get here, we need to create a new memmap
+        return np.lib.format.open_memmap(filepath, mode='w+', dtype=dtype, shape=shape)
+
+    # Check for existing training memmaps
+    train_files = [
+        ('X_train.npy', X.dtype, (n_train, X.shape[1])),
+        ('pair_s1_train.npy', np.int64, (n_train,)),
+        ('pair_t_train.npy', np.int64, (n_train,)),
+        ('y_train.npy', np.int8, (n_train,))
+    ]
+
+    # Check for existing validation memmaps in feat_test directory
+    val_files_feat_test = [
+        ('X_test.npy', X.dtype, (n_val, X.shape[1])),
+        ('pair_s1_test.npy', np.int64, (n_val,)),
+        ('pair_t_test.npy', np.int64, (n_val,)),
+        ('y_test.npy', np.int8, (n_val,))
+    ]
+
+    # Check for existing validation memmaps in feat_train directory (with _val suffix)
+    val_files_feat_train = [
+        ('X_val.npy', X.dtype, (n_val, X.shape[1])),
+        ('pair_s1_val.npy', np.int64, (n_val,)),
+        ('pair_t_val.npy', np.int64, (n_val,)),
+        ('y_val.npy', np.int8, (n_val,))
+    ]
+
+    # Try to load training memmaps
+    train_loaded = True
+    try:
+        dtrain_X = check_and_load_memmap(os.path.join(train_feat_dir, 'X_train.npy'), *train_files[0])
+        dtrain_s1 = check_and_load_memmap(os.path.join(train_feat_dir, 'pair_s1_train.npy'), *train_files[1])
+        dtrain_t = check_and_load_memmap(os.path.join(train_feat_dir, 'pair_t_train.npy'), *train_files[2])
+        dtrain_y = check_and_load_memmap(os.path.join(train_feat_dir, 'y_train.npy'), *train_files[3])
+        # Verify that all were loaded successfully (not recreated)
+        # We can't easily check if they were recreated, but we assume if they exist and shape matches, they are loaded.
+        print("    Using existing training memmaps.", file=sys.stderr)
+    except Exception as e:
+        print(f"    Failed to load training memmaps: {e}. Creating new ones.", file=sys.stderr)
+        train_loaded = False
+
+    if not train_loaded:
+        # Create new training memmaps
+        dtrain_X = np.lib.format.open_memmap(f"{train_feat_dir}/X_train.npy", mode='w+',
+                                             dtype=X.dtype, shape=(n_train, X.shape[1]))
+        dtrain_s1 = np.lib.format.open_memmap(f"{train_feat_dir}/pair_s1_train.npy", mode='w+',
+                                              dtype=np.int64, shape=(n_train,))
+        dtrain_t = np.lib.format.open_memmap(f"{train_feat_dir}/pair_t_train.npy", mode='w+',
+                                             dtype=np.int64, shape=(n_train,))
+        dtrain_y = np.lib.format.open_memmap(f"{train_feat_dir}/y_train.npy", mode='w+',
+                                             dtype=np.int8, shape=(n_train,))
+        print("    Created new training memmaps.", file=sys.stderr)
+
+    # Try to load validation memmaps from feat_test directory first
+    val_loaded = True
+    try:
+        dval_X = check_and_load_memmap(os.path.join(val_feat_dir, 'X_test.npy'), *val_files_feat_test[0])
+        dval_s1 = check_and_load_memmap(os.path.join(val_feat_dir, 'pair_s1_test.npy'), *val_files_feat_test[1])
+        dval_t = check_and_load_memmap(os.path.join(val_feat_dir, 'pair_t_test.npy'), *val_files_feat_test[2])
+        dval_y = check_and_load_memmap(os.path.join(val_feat_dir, 'y_test.npy'), *val_files_feat_test[3])
+        print("    Using existing validation memmaps from feat_test directory.", file=sys.stderr)
+    except Exception as e:
+        print(f"    Failed to load validation memmaps from feat_test: {e}. Trying feat_train directory.", file=sys.stderr)
+        val_loaded = False
+
+    if not val_loaded:
+        # Try to load validation memmaps from feat_train directory (with _val suffix)
+        try:
+            dval_X = check_and_load_memmap(os.path.join(train_feat_dir, 'X_val.npy'), *val_files_feat_train[0])
+            dval_s1 = check_and_load_memmap(os.path.join(train_feat_dir, 'pair_s1_val.npy'), *val_files_feat_train[1])
+            dval_t = check_and_load_memmap(os.path.join(train_feat_dir, 'pair_t_val.npy'), *val_files_feat_train[2])
+            dval_y = check_and_load_memmap(os.path.join(train_feat_dir, 'y_val.npy'), *val_files_feat_train[3])
+            print("    Using existing validation memmaps from feat_train directory (with _val suffix).", file=sys.stderr)
+        except Exception as e:
+            print(f"    Failed to load validation memmaps from feat_train: {e}. Creating new ones in feat_test directory.", file=sys.stderr)
+            val_loaded = False
+
+    if not val_loaded:
+        # Create new validation memmaps in feat_test directory
+        dval_X = np.lib.format.open_memmap(f"{val_feat_dir}/X_test.npy", mode='w+',
+                                           dtype=X.dtype, shape=(n_val, X.shape[1]))
+        dval_s1 = np.lib.format.open_memmap(f"{val_feat_dir}/pair_s1_test.npy", mode='w+',
+                                            dtype=np.int64, shape=(n_val,))
+        dval_t = np.lib.format.open_memmap(f"{val_feat_dir}/pair_t_test.npy", mode='w+',
+                                           dtype=np.int64, shape=(n_val,))
+        dval_y = np.lib.format.open_memmap(f"{val_feat_dir}/y_test.npy", mode='w+',
+                                           dtype=np.int8, shape=(n_val,))
+        print("    Created new validation memmaps in feat_test directory.", file=sys.stderr)
 
     # Track any leftover data from previous chunk that didn't fit in allocated space
     leftover_train_X = None
@@ -135,93 +226,108 @@ def main(feature_dir: str, truth_dir: str, ground_truth_path: str, cache_dir: st
     leftover_val_t = None
     leftover_val_y = None
 
-    train_idx = 0
-    val_idx = 0
-    for start in range(0, n_pairs, chunk_size):
-        end = min(start + chunk_size, n_pairs)
-        X_chunk = X[start:end]
-        s1_chunk = pair_s1[start:end]
-        t_chunk = pair_t[start:end]
+    if not (train_loaded and val_loaded):
+        train_idx = 0
+        val_idx = 0
+        for start in range(0, n_pairs, chunk_size):
+            end = min(start + chunk_size, n_pairs)
+            X_chunk = X[start:end]
+            s1_chunk = pair_s1[start:end]
+            t_chunk = pair_t[start:end]
 
-        # Handle leftover from previous iteration
-        if leftover_train_X is not None and leftover_train_X.shape[0] > 0:
-            # Prepend leftover data to current chunk
-            X_chunk = np.concatenate([leftover_train_X, X_chunk])
-            s1_chunk = np.concatenate([leftover_train_s1, s1_chunk])
-            t_chunk = np.concatenate([leftover_train_t, t_chunk])
-            leftover_train_X = None
-            leftover_train_s1 = None
-            leftover_train_t = None
-            leftover_train_y = None
+            # Handle leftover from previous iteration
+            if leftover_train_X is not None and leftover_train_X.shape[0] > 0:
+                # Prepend leftover data to current chunk
+                X_chunk = np.concatenate([leftover_train_X, X_chunk])
+                s1_chunk = np.concatenate([leftover_train_s1, s1_chunk])
+                t_chunk = np.concatenate([leftover_train_t, t_chunk])
+                leftover_train_X = None
+                leftover_train_s1 = None
+                leftover_train_t = None
+                leftover_train_y = None
 
-        if leftover_val_X is not None and leftover_val_X.shape[0] > 0:
-            # Prepend leftover data to current chunk
-            X_chunk = np.concatenate([leftover_val_X, X_chunk])
-            s1_chunk = np.concatenate([leftover_val_s1, s1_chunk])
-            t_chunk = np.concatenate([leftover_val_t, t_chunk])
-            leftover_val_X = None
-            leftover_val_s1 = None
-            leftover_val_t = None
-            leftover_val_y = None
+            if leftover_val_X is not None and leftover_val_X.shape[0] > 0:
+                # Prepend leftover data to current chunk
+                X_chunk = np.concatenate([leftover_val_X, X_chunk])
+                s1_chunk = np.concatenate([leftover_val_s1, s1_chunk])
+                t_chunk = np.concatenate([leftover_val_t, t_chunk])
+                leftover_val_X = None
+                leftover_val_s1 = None
+                leftover_val_t = None
+                leftover_val_y = None
 
-        # Check which S1s in this chunk belong to train/val using lookup arrays
-        in_train = train_s1_lookup[s1_chunk]
-        in_val = val_s1_lookup[s1_chunk]
+            # Check which S1s in this chunk belong to train/val using lookup arrays
+            in_train = train_s1_lookup[s1_chunk]
+            in_val = val_s1_lookup[s1_chunk]
 
-        # Compute labels for what fits
-        train_keys_pairs = (t_chunk[:available_space].astype(np.int64) << np.int64(32)) | s1_chunk[:available_space].astype(np.int64)
-        val_keys_pairs = (t_chunk[:available_space].astype(np.int64) << np.int64(32)) | s1_chunk[:available_space].astype(np.int64)
-        train_pos_mask = np.isin(train_keys_pairs, keys_truth, assume_unique=True)
-        val_pos_mask = np.isin(val_keys_pairs, keys_truth, assume_unique=True)
+            # Training data
+            train_X_chunk = X_chunk[in_train]
+            train_s1_chunk = s1_chunk[in_train]
+            train_t_chunk = t_chunk[in_train]
+            # For training labels, we look up in truth: 1 if (s1, t) in truth, else 0
+            train_keys = (train_t_chunk.astype(np.int64) << np.int64(32)) | train_s1_chunk.astype(np.int64)
+            train_pos_mask = np.isin(train_keys, keys_truth, assume_unique=True)
 
-        # Available space in training memmaps
-        available_space = n_train - train_idx
-        if len(train_X_chunk) > available_space:
-            # Not enough space - split the data
-            # Copy what fits
-            dtrain_X[train_idx:train_idx+available_space] = train_X_chunk[:available_space]
-            dtrain_s1[train_idx:train_idx+available_space] = train_s1_chunk[:available_space]
-            dtrain_t[train_idx:train_idx+available_space] = train_t_chunk[:available_space]
-            dtrain_y[train_idx:train_idx+available_space] = train_pos_mask[:available_space]
+            # Validation data
+            val_X_chunk = X_chunk[in_val]
+            val_s1_chunk = s1_chunk[in_val]
+            val_t_chunk = t_chunk[in_val]
+            # For validation labels
+            val_keys = (val_t_chunk.astype(np.int64) << np.int64(32)) | val_s1_chunk.astype(np.int64)
+            val_pos_mask = np.isin(val_keys, keys_truth, assume_unique=True)
 
-            # Save leftover for next iteration
-            leftover_train_X = train_X_chunk[available_space:]
-            leftover_train_s1 = train_s1_chunk[available_space:]
-            leftover_train_t = train_t_chunk[available_space:]
-            leftover_train_y = train_pos_mask[available_space:]
-        else:
-            # Enough space - copy all data
-            dtrain_X[train_idx:train_idx+len(train_X_chunk)] = train_X_chunk
-            dtrain_s1[train_idx:train_idx+len(train_X_chunk)] = train_s1_chunk
-            dtrain_t[train_idx:train_idx+len(train_X_chunk)] = train_t_chunk
-            dtrain_y[train_idx:train_idx+len(train_X_chunk)] = train_pos_mask
-            # No leftover
+            # Handle training data
+            if len(train_X_chunk) > 0:
+                # Available space in training memmaps
+                available_space = n_train - train_idx
+                if len(train_X_chunk) > available_space:
+                    # Not enough space - split the data
+                    # Copy what fits
+                    dtrain_X[train_idx:train_idx+available_space] = train_X_chunk[:available_space]
+                    dtrain_s1[train_idx:train_idx+available_space] = train_s1_chunk[:available_space]
+                    dtrain_t[train_idx:train_idx+available_space] = train_t_chunk[:available_space]
+                    dtrain_y[train_idx:train_idx+available_space] = train_pos_mask[:available_space]
 
-        # Available space in validation memmaps
-        available_space = n_val - val_idx
-        if len(val_X_chunk) > available_space:
-            # Not enough space - split the data
-            # Copy what fits
-            dval_X[val_idx:val_idx+available_space] = val_X_chunk[:available_space]
-            dval_s1[val_idx:val_idx+available_space] = val_s1_chunk[:available_space]
-            dval_t[val_idx:val_idx+available_space] = val_t_chunk[:available_space]
-            dval_y[val_idx:val_idx+available_space] = val_pos_mask[:available_space]
+                    # Save leftover for next iteration
+                    leftover_train_X = train_X_chunk[available_space:]
+                    leftover_train_s1 = train_s1_chunk[available_space:]
+                    leftover_train_t = train_t_chunk[available_space:]
+                    leftover_train_y = train_pos_mask[available_space:]
+                else:
+                    # Enough space - copy all data
+                    dtrain_X[train_idx:train_idx+len(train_X_chunk)] = train_X_chunk
+                    dtrain_s1[train_idx:train_idx+len(train_X_chunk)] = train_s1_chunk
+                    dtrain_t[train_idx:train_idx+len(train_X_chunk)] = train_t_chunk
+                    dtrain_y[train_idx:train_idx+len(train_X_chunk)] = train_pos_mask
+                    # No leftover
 
-            # Save leftover for next iteration
-            leftover_val_X = val_X_chunk[available_space:]
-            leftover_val_s1 = val_s1_chunk[available_space:]
-            leftover_val_t = val_t_chunk[available_space:]
-            leftover_val_y = val_pos_mask[available_space:]
-        else:
-            # Enough space - copy all data
-            dval_X[val_idx:val_idx+len(val_X_chunk)] = val_X_chunk
-            dval_s1[val_idx:val_idx+len(val_X_chunk)] = val_s1_chunk
-            dval_t[val_idx:val_idx+len(val_X_chunk)] = val_t_chunk
-            dval_y[val_idx:val_idx+len(val_X_chunk)] = val_pos_mask
-            # No leftover
+            # Handle validation data
+            if len(val_X_chunk) > 0:
+                # Available space in validation memmaps
+                available_space = n_val - val_idx
+                if len(val_X_chunk) > available_space:
+                    # Not enough space - split the data
+                    # Copy what fits
+                    dval_X[val_idx:val_idx+available_space] = val_X_chunk[:available_space]
+                    dval_s1[val_idx:val_idx+available_space] = val_s1_chunk[:available_space]
+                    dval_t[val_idx:val_idx+available_space] = val_t_chunk[:available_space]
+                    dval_y[val_idx:val_idx+available_space] = val_pos_mask[:available_space]
 
-        train_idx += available_space  # We've filled available_space more elements
-        val_idx += available_space  # We've filled available_space more elements
+                    # Save leftover for next iteration
+                    leftover_val_X = val_X_chunk[available_space:]
+                    leftover_val_s1 = val_s1_chunk[available_space:]
+                    leftover_val_t = val_t_chunk[available_space:]
+                    leftover_val_y = val_pos_mask[available_space:]
+                else:
+                    # Enough space - copy all data
+                    dval_X[val_idx:val_idx+len(val_X_chunk)] = val_X_chunk
+                    dval_s1[val_idx:val_idx+len(val_X_chunk)] = val_s1_chunk
+                    dval_t[val_idx:val_idx+len(val_X_chunk)] = val_t_chunk
+                    dval_y[val_idx:val_idx+len(val_X_chunk)] = val_pos_mask
+                    # No leftover
+
+            train_idx += len(train_X_chunk)
+            val_idx += len(val_X_chunk)
 
     print(f"  Training positives: {dtrain_y.sum():,} ({dtrain_y.mean()*100:.2f}%)",
           file=sys.stderr)
@@ -240,51 +346,56 @@ def main(feature_dir: str, truth_dir: str, ground_truth_path: str, cache_dir: st
     lgb_train = lgb.Dataset(dtrain_X, label=dtrain_y)
     lgb_val = lgb.Dataset(dval_X, label=dval_y, reference=lgb_train)
 
-    # Training parameters
+    # Set parameters
     params = {
         'objective': 'binary',
-        'metric': ['binary_logloss', 'auc'],
+        'metric': 'binary_logloss',
         'boosting_type': 'gbdt',
-        'num_leaves': 63,
+        'num_leaves': 31,
         'learning_rate': 0.05,
         'feature_fraction': 0.9,
         'bagging_fraction': 0.8,
         'bagging_freq': 5,
         'verbose': -1,
+        'is_unbalance': True,  # because we have few positives
         'seed': 42
     }
 
-    # Train model
+    # Train the model
+    print("  Starting training...", file=sys.stderr)
     gbm = lgb.train(params,
                     lgb_train,
                     num_boost_round=1000,
                     valid_sets=[lgb_train, lgb_val],
-                    callbacks=[
-                        lgb.early_stopping(stopping_rounds=50),
-                        lgb.log_evaluation(period=50)
-                    ])
+                    callbacks=[lgb.early_stopping(stopping_rounds=50),
+                               lgb.log_evaluation(100)])
 
-    # Save model
+    # Save the model
+    print(f"  Saving model to {model_dir}...", file=sys.stderr)
     os.makedirs(model_dir, exist_ok=True)
-    model_path = f"{model_dir}/model.txt"
-    gbm.save_model(model_path)
-    print(f"  Model saved to {model_path}", file=sys.stderr)
+    gbm.save_model(os.path.join(model_dir, "lgb_model.txt"))
 
-    # Feature importance
-    print("  Top 20 features by importance:", file=sys.stderr)
-    for i, (imp, name) in enumerate(zip(gbm.feature_importance(importance_type='gain'),
-                                        [f"f_{i}" for i in range(X.shape[1])])):
-        if i >= 20:
-            break
-        print(f"    {i+1:2d}. {name}: {imp}", file=sys.stderr)
+    # Also save the feature metadata for later use in inference
+    meta = {
+        'feature_dim': X.shape[1],
+        'train_pairs': n_train,
+        'val_pairs': n_val,
+        'unique_s1_count': len(all_s1),
+        'max_s1_id': int(max_s1_id)
+    }
+    import json
+    with open(os.path.join(model_dir, "metadata.json"), 'w') as f:
+        json.dump(meta, f, indent=2)
+
+    print("  Training completed successfully!", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Train business entity resolution model')
-    parser.add_argument('feature_dir', help='Directory containing feature files')
-    parser.add_argument('truth_dir', help='Directory containing truth files')
-    parser.add_argument('ground_truth_path', help='Path to ground truth TSV file')
-    parser.add_argument('cache_dir', help='Directory for intermediate cache files')
-    parser.add_argument('model_dir', help='Directory to save trained model')
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--feature_dir", type=str, required=True)
+    parser.add_argument("--truth_dir", type=str, required=True)
+    parser.add_argument("--ground_truth_path", type=str, required=True)
+    parser.add_argument("--cache_dir", type=str, required=True)
+    parser.add_argument("--model_dir", type=str, required=True)
     args = parser.parse_args()
     main(args.feature_dir, args.truth_dir, args.ground_truth_path, args.cache_dir, args.model_dir)
