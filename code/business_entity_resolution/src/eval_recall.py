@@ -68,17 +68,7 @@ def run(cache_dir: str, cand_dir: str, out_dir: str, gt_tsv: str, split: str) ->
                 gt[s1] = ids
     print(f"GT: {len(gt):,} S1 with >=1 match ({time.time()-t0:.0f}s)", file=sys.stderr)
 
-    # mark candidate hits
-    is_hit = np.zeros(n_s1 + 1, dtype=np.int64)   # prefix over pairs
-    hit_cnt = np.zeros(n_s1, dtype=np.int32)
-    pos_s1_parts, pos_t_parts = [], []
-    s1_of_pair = np.repeat(np.arange(n_s1, dtype=np.int64), np.diff(offs))
-    tid_of_pair = np.empty(len(flat), dtype=np.int64)
-    # vectorized target-id -> local index needs a lookup over 10M strings:
-    # do it in chunks via dict (fast enough in C-level loop over python list)
-    flat_list = flat.tolist()
-    # build row->tid array lazily: we need entity id strings per target row;
-    # instead compare by row index: build gt as row indices
+    # map GT ids -> row indices (s1_row for S1; n2-offset for S2/S3 concat)
     gt_rows = {}
     for s1, ids in gt.items():
         i1 = s1_row.get(s1)
@@ -93,27 +83,36 @@ def run(cache_dir: str, cand_dir: str, out_dir: str, gt_tsv: str, split: str) ->
             gt_rows[i1] = rows
     print(f"GT rows mapped: {len(gt_rows):,} ({time.time()-t0:.0f}s)", file=sys.stderr)
 
-    # is target row a true match of its s1? vectorized via sorted (s1,t) keys
-    pos_s1, pos_t = [], []
-    hits = 0
-    total_gt = sum(len(rows) for rows in gt_rows.values())
+    # is target row a true match of its s1? vectorized via sorted (s1,t) keys.
+    # pair key = (s1_row << 32) | target_idx; compare against sorted gt_keys
+    # in chunks with searchsorted -> O(1) temp memory, no giant isin.
     gt_keys = []
     for i1, rows in gt_rows.items():
         for r in rows:
             gt_keys.append((np.int64(i1) << np.int64(32)) | np.int64(r))
-    gt_keys = np.asarray(gt_keys, dtype=np.int64)
-    gt_keys.sort()
-    s1_of_pair = np.repeat(np.arange(n_s1, dtype=np.int64), np.diff(offs))
-    pair_keys = (np.asarray(flat, dtype=np.int64) << np.int64(32)) | s1_of_pair
-    del s1_of_pair
-    is_pos = np.isin(pair_keys, gt_keys, assume_unique=False)
-    del pair_keys, gt_keys
-    hits = int(is_pos.sum())
-    pos_s1 = s1_of_pair_orig = None  # keep names quiet
-    pos_idx = np.flatnonzero(is_pos)
-    del is_pos
-    pos_s1_arr = np.repeat(np.arange(n_s1, dtype=np.int64), np.diff(offs))[pos_idx]
-    pos_t_arr = np.asarray(flat)[pos_idx]
+    gt_keys = np.unique(np.asarray(gt_keys, dtype=np.int64))
+    total_gt = len(gt_keys)
+
+    pos_s1_parts, pos_t_parts = [], []
+    hits = 0
+    for start in range(0, n_s1, 20_000):
+        end = min(start + 20_000, n_s1)
+        seg = flat[offs[start]:offs[end]]
+        s1_of_seg = np.repeat(
+            np.arange(start, end, dtype=np.int64), np.diff(offs[start:end + 1]))
+        keys = (s1_of_seg << np.int64(32)) | np.asarray(seg, dtype=np.int64)
+        j = np.searchsorted(gt_keys, keys)
+        j_c = np.minimum(j, len(gt_keys) - 1)
+        is_pos = gt_keys[j_c] == keys
+        hits += int(is_pos.sum())
+        if is_pos.any():
+            idx = np.flatnonzero(is_pos)
+            pos_s1_parts.append(s1_of_seg[idx])
+            pos_t_parts.append(seg[idx])
+    pos_s1_arr = (np.concatenate(pos_s1_parts) if pos_s1_parts
+                  else np.zeros(0, dtype=np.int64))
+    pos_t_arr = (np.concatenate(pos_t_parts) if pos_t_parts
+                 else np.zeros(0, dtype=np.int32))
     recall = hits / max(total_gt, 1)
     print(f"candidate recall = {recall:.4f}  ({hits:,}/{total_gt:,} true pairs in candidates)",
           file=sys.stderr)

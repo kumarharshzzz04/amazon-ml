@@ -67,13 +67,33 @@ def stage_blobs():
     sh([PY, "-m", "src.blobs", "work/cache", "work/keys2", "work/blobs"])
 
 
-def stage_features(split: str, workers: int = 6):
-    out = f"work/feat_{split}"
-    if os.path.exists(f"{out}/X.npy"):
-        print(f"[skip] {out} exists")
+def stage_features(split: str, workers: int = 6, neg_per_s1: float = 3.0):
+    if split == "train":
+        out = "work/feat_train"
+        if os.path.exists(f"{out}/meta.json"):
+            print(f"[skip] {out} exists")
+            return
+        # negative-subsampled matrix: every GT positive + ~3 negatives/S1
+        # (the full 321M-pair matrix would be ~43 GB and does not fit)
+        sh([PY, "-m", "src.build_features_sub", "work/blobs",
+            "work/cand_train", "work/cand_train", out, "train",
+            str(workers), str(neg_per_s1)])
+    else:
+        # test features are computed on the fly inside src.infer
+        print("[skip] test features are computed on the fly by src.infer")
+
+
+def stage_calibrate():
+    if os.path.exists("work/model/threshold.json"):
+        print("[skip] threshold.json exists")
         return
-    sh([PY, "-m", "src.build_features", "work/blobs", f"work/cand_{split}",
-        out, split, str(workers)])
+    if not os.path.exists("work/calib/X.npy"):
+        sh([PY, "-m", "src.build_features_range", "work/blobs",
+            "work/cand_train", "work/calib", "train", "100000"])
+    sh([PY, "-m", "src.calibrate", "work/calib", "work/cand_train",
+        "work/model",
+        "student_resource/student_resource/dataset/train/train_ground_truth.tsv",
+        "work/cache", "work/model"])
 
 
 def stage_train():
@@ -81,8 +101,7 @@ def stage_train():
         print("[skip] model exists")
         return
     sh([PY, "-m", "src.train", "work/feat_train", "work/cand_train",
-        "student_resource/student_resource/dataset/train/train_ground_truth.tsv",
-        "work/cache", "work/model"])
+        "work/model"])
 
 
 def stage_inference():
@@ -98,6 +117,7 @@ STAGES = {
     "blobs": stage_blobs,
     "features": lambda: (stage_features("train"), stage_features("test")),
     "train": stage_train,
+    "calibrate": stage_calibrate,
     "inference": stage_inference,
 }
 

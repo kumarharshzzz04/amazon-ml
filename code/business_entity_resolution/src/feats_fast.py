@@ -108,16 +108,16 @@ def compute_chunk(store: BlobStore, chunk):
     """chunk: iterable of (s1_row, target_idx, key_score, key_count)."""
     tok = _tokens_cached_factory()
     out = np.empty((len(chunk), NF), dtype=np.float32)
-    n2 = store.n2
+    n2_cnt = store.n2
     for r, (i1, t, ksc, kcn) in enumerate(chunk):
         n1, a1, d1, c1, p1 = store.rec(1, i1)
-        if t < n2:
+        if t < n2_cnt:
             s = 2
             i2 = t
         else:
             s = 3
-            i2 = t - n2
-        n2t, a2, d2, c2, p2 = store.rec(s, i2)
+            i2 = t - n2_cnt
+        n2, a2, d2, c2, p2 = store.rec(s, i2)
 
         t1 = tok("n", n1)
         t2 = tok("n", n2)

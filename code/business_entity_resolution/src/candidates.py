@@ -178,16 +178,17 @@ def run(keys_dir: str, out_dir: str, split: str, k: int = 6, thr: float = 2000.0
 
     _atomic_save(f"{out_dir}/cand.offs.npy", offs_out)
     _atomic_save(f"{out_dir}/cand.flat.npy", flat.astype(np.int32, copy=False))
+    n_pairs = int(len(flat))
     del flat
     _atomic_save(f"{out_dir}/cand.score.npy", score.astype(np.float32, copy=False))
     del score
     _atomic_save(f"{out_dir}/cand.count.npy", cnt)
     cfg = {"k": k, "thr": thr, "top_m": top_m, "split": split, "n_s1": int(n_s1),
-           "n_pairs": int(len(flat)),
-           "mean_cand": float(len(flat) / max(n_s1, 1))}
+           "n_pairs": n_pairs,
+           "mean_cand": float(n_pairs / max(n_s1, 1))}
     with open(f"{out_dir}/config.json", "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-    print(f"* wrote {len(flat):,} pairs ({cfg['mean_cand']:.1f}/S1) "
+    print(f"* wrote {n_pairs:,} pairs ({cfg['mean_cand']:.1f}/S1) "
           f"in {time.time()-t0:.0f}s", file=sys.stderr)
 
 
